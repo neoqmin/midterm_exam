@@ -32,6 +32,7 @@ typedef struct _process {
  */
 typedef struct _ready_queue {
     ProcessInfo             processInfo;
+    struct _ready_queue     *pPrevious;
     struct _ready_queue     *pNext;         ///< 링크드리스트로 다음 프로세스 정보가 연결되어 있음
 } Ready_Queue, *PReady_Queue;
 
@@ -113,7 +114,7 @@ void
 *RoundRobinScheduler(void *param)
 {
     PReady_Queue pCurrentProcess = g_pRootReadyQueue;   // 프로세스 처리를 위한 현재 큐
-    PReady_Queue pPreviousProcess = NULL;               // 프로세스 처리를 위한 이전 큐
+    PReady_Queue pFreeReadyQueue = NULL;               // 프로세스 처리를 위한 이전 큐
     int nQuantomn = *(int*)param;               // 시간 퀀텀을 받아온다.
     char szDoing[5];                            // 작업 프로세스
     int i;                                      // loop index
@@ -147,46 +148,29 @@ void
         pthread_mutex_lock(&mutex);
         // 만약, 모든 작업이 완료되었다면, 현재의 프로세스를 준비큐에서 제거하고, 삭제한다.
         if(pCurrentProcess->processInfo.nBurstTime == 0) {
-            DEBUG(("complete %d process.\n", pCurrentProcess->processInfo.nProcessId));
-            if(pPreviousProcess) {
-                pPreviousProcess->pNext = pCurrentProcess->pNext;
-                if((pPreviousProcess == g_pRootReadyQueue)
-                    && (pPreviousProcess->processInfo.nBurstTime == 0))
-                {
-                    DEBUG(("burst zero\n"));
-                    free(pCurrentProcess);
-                    pCurrentProcess = NULL;
+            // 모든 작업을 완료했기 때문에 레디큐에서 프로세스 정보를 제거한다.
+            pFreeReadyQueue = pCurrentProcess;
+            if(pCurrentProcess->pPrevious) {        // 이전 큐가 있을 경우
+                pCurrentProcess->pPrevious->pNext = pCurrentProcess->pNext;
+            }
+            if(pCurrentProcess->pNext) {
+                pCurrentProcess->pNext->pPrevious = pCurrentProcess->pPrevious;
+            }
+            pCurrentProcess = pCurrentProcess->pNext;
+            if(pCurrentProcess == NULL) {
+                if(pFreeReadyQueue == g_pRootReadyQueue) {
                     g_pRootReadyQueue = NULL;
                 } else {
-                    DEBUG(("not match\n"));
-                    free(pCurrentProcess);
-                    pCurrentProcess = pPreviousProcess->pNext;
-                    if(pCurrentProcess == NULL) {
-                        pCurrentProcess = g_pRootReadyQueue;
+                    if(g_pRootReadyQueue == pFreeReadyQueue) {
+                        g_pRootReadyQueue = pFreeReadyQueue->pNext;
                     }
-                }
-            } else {
-                if((pCurrentProcess == g_pRootReadyQueue)
-                    && (pCurrentProcess->pNext == NULL))
-                {
-                    DEBUG(("here\n"));
-                    free(pCurrentProcess);
-                    g_pRootReadyQueue = NULL;
-                    pCurrentProcess = NULL;
-                } else {
-                    DEBUG(("0x%08x 0x%08x 0x%08x\n", pCurrentProcess, g_pRootReadyQueue, pCurrentProcess->pNext));
-                    pPreviousProcess = g_pRootReadyQueue;
-                    g_pRootReadyQueue->pNext = pCurrentProcess->pNext;
-                    free(pCurrentProcess);
-                    pCurrentProcess = g_pRootReadyQueue->pNext;
+                    pCurrentProcess = g_pRootReadyQueue;
                 }
             }
+            free(pFreeReadyQueue);
         } else {
-            DEBUG(("loop\n"));
-            if(pCurrentProcess->pNext != NULL) {
-                pPreviousProcess = pCurrentProcess;
-                pCurrentProcess = pCurrentProcess->pNext;
-            } else {
+            pCurrentProcess = pCurrentProcess->pNext;
+            if(pCurrentProcess == NULL) {
                 pCurrentProcess = g_pRootReadyQueue;
             }
         }
@@ -194,6 +178,39 @@ void
     }
     
     DEBUG(("Leaving %s\n", __FUNCTION__));
+}
+
+/**
+ * @breif       레디큐에 하나의 프로세스 정보를 추가한다.
+ * @param[in]   pReadyQueue     추가할 프로세스 정보를 가지고 있는 큐객체
+ * @return      void*           레디큐에 연결 후의 해당 엔트리 포인터
+ * @date        2015.10.20
+ * @author      황규민
+ */
+void*
+AddtoReadyQueue(PReady_Queue pReadyQueue)
+{
+    PReady_Queue    pTempReadyQueue = NULL; // 임시 레디큐 객체
+    
+    // 임계영역 처리를 위해 mutex로 lock을 건다.
+    pthread_mutex_lock(&mutex);
+    if(g_pRootReadyQueue) {
+        // 레디큐의 맨 마지막으로 간다.
+        pTempReadyQueue = g_pRootReadyQueue;
+        while(pTempReadyQueue->pNext) {
+            pTempReadyQueue = pTempReadyQueue->pNext;
+        }
+        
+        // 레디큐의 맨 마지막에서 데이터를 추가한다.
+        pTempReadyQueue->pNext = pReadyQueue;
+        pReadyQueue->pPrevious = pTempReadyQueue;
+    } else {
+        // 레디큐의 루트가 비어있을 경우 대체한다.
+        g_pRootReadyQueue = pReadyQueue;
+    }
+    pthread_mutex_unlock(&mutex);   // unlock한다.
+    
+    return pReadyQueue;
 }
 
 /**
@@ -236,15 +253,9 @@ main(int argc, char **argv) {
             pReadyQueue->processInfo.nBurstTime = atoi(sInputBuffer);    // 버스트 시간 
             pReadyQueue->processInfo.nProcessId = i;
             pReadyQueue->pNext = NULL;
+            pReadyQueue->pPrevious = NULL;
             
-            pthread_mutex_lock(&mutex);
-            if(pTempReady_Queue) {
-                pTempReady_Queue->pNext = pReadyQueue;
-                pTempReady_Queue = pReadyQueue;
-            } else {
-                pTempReady_Queue = g_pRootReadyQueue = pReadyQueue;
-            }
-            pthread_mutex_unlock(&mutex);
+            AddtoReadyQueue(pReadyQueue);
         }
     }
     
