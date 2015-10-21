@@ -31,9 +31,10 @@ typedef struct _process {
  * @author  황규민
  */
 typedef struct _ready_queue {
-    ProcessInfo             processInfo;
     struct _ready_queue     *pPrevious;
     struct _ready_queue     *pNext;         ///< 링크드리스트로 다음 프로세스 정보가 연결되어 있음
+    
+    ProcessInfo             processInfo;
 } Ready_Queue, *PReady_Queue;
 
 PReady_Queue        g_pRootReadyQueue = NULL;          ///< 준비 큐의 Root
@@ -77,7 +78,7 @@ GetNumberOfProcess()
  * @author      황규민
  */
 int
-GetQuanterm()
+GetQuantum()
 {
     char    sInputBuffer[5];            // 입력받는 문자열(시간 퀀텀)
     int     nQuantomn = 0;              // 시간 퀀텀
@@ -109,6 +110,8 @@ pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;      // 스레드 초기화
  * @brief       Round Robin Scheduler
  * @date        2015.10.20
  * @author      황규민
+ * @note        스케쥴러는 인터럽트 호출에 의해서 동작된다.
+ * @note        각 프로세스의 문맥 교환을 일으키는 것이 맞으나 해당과제는 시뮬레이션이기 때문에 아래와 같이 코딩
  */
 void
 *RoundRobinScheduler(void *param)
@@ -124,57 +127,57 @@ void
     while(pCurrentProcess) {
         memset(szDoing, 0x00, 5);
         
-        
         // 프로세스의 처리를 시각화하기 위한 작업
         sprintf(szDoing, "[%d", pCurrentProcess->processInfo.nProcessId);
         strcat(g_szResult, szDoing);
         DEBUG((szDoing));
         for(i=1;i<=nQuantomn;i++) {
-            strcat(g_szResult, "-");
-            DEBUG(("-"));
+            strcat(g_szResult, ".");
+            DEBUG(("."));
             // 버스트 시간을 줄이면서 프로세스의 작동을 표시한다.
-            pthread_mutex_lock(&mutex);
             if(--pCurrentProcess->processInfo.nBurstTime == 0) {
                 // 버스트 시간이 0이면, 처리하지 않는다.
-                pthread_mutex_unlock(&mutex);
                 break;
             }
-            pthread_mutex_unlock(&mutex);
         }
         strcat(g_szResult, "]");
         DEBUG(("]"));
         
-        // 프로세스를 이동한다.
-        pthread_mutex_lock(&mutex);
         // 만약, 모든 작업이 완료되었다면, 현재의 프로세스를 준비큐에서 제거하고, 삭제한다.
         if(pCurrentProcess->processInfo.nBurstTime == 0) {
             // 모든 작업을 완료했기 때문에 레디큐에서 프로세스 정보를 제거한다.
-            pFreeReadyQueue = pCurrentProcess;
-            if(pCurrentProcess->pPrevious) {        // 이전 큐가 있을 경우
-                pCurrentProcess->pPrevious->pNext = pCurrentProcess->pNext;
-            }
-            if(pCurrentProcess->pNext) {
-                pCurrentProcess->pNext->pPrevious = pCurrentProcess->pPrevious;
-            }
-            pCurrentProcess = pCurrentProcess->pNext;
-            if(pCurrentProcess == NULL) {
-                if(pFreeReadyQueue == g_pRootReadyQueue) {
-                    g_pRootReadyQueue = NULL;
-                } else {
-                    if(g_pRootReadyQueue == pFreeReadyQueue) {
-                        g_pRootReadyQueue = pFreeReadyQueue->pNext;
-                    }
-                    pCurrentProcess = g_pRootReadyQueue;
+            if(g_pRootReadyQueue == pCurrentProcess) {      // 맨 처음 엔트리일 경우
+                // 위치 이동
+                g_pRootReadyQueue = pCurrentProcess->pNext;
+                if(pCurrentProcess->pNext) {
+                    pCurrentProcess->pNext->pPrevious = NULL;
                 }
+                
+                pFreeReadyQueue = pCurrentProcess;          // 삭제할 Ready queue 엔트리를 pFreeReadyQueue로 대입
+                pCurrentProcess = pCurrentProcess->pNext;   // 다음 pCurrentProcess로 이동
+            } else if(pCurrentProcess->pNext == NULL) {     // 맨 마지막 엔트리일 경우
+                // 위치 이동
+                pCurrentProcess->pPrevious->pNext = NULL;
+                
+                pFreeReadyQueue = pCurrentProcess;      // 삭제할 Ready queue 엔트리를 pFreeReadyQueue로 대입
+                pCurrentProcess = g_pRootReadyQueue;    // 다음 pCurrentProcess로 이동
+            } else {                                        // 중간 엔트리일 경우
+                // 위치 이동
+                pCurrentProcess->pPrevious->pNext = pCurrentProcess->pNext;
+                pCurrentProcess->pNext->pPrevious = pCurrentProcess->pPrevious;
+            
+                
+                pFreeReadyQueue = pCurrentProcess;          // 삭제할 Ready queue 엔트리를 pFreeReadyQueue로 대입
+                pCurrentProcess = pCurrentProcess->pNext;   // 다음 pCurrentProcess로 이동
             }
             free(pFreeReadyQueue);
         } else {
+            // 삭제 없이 이동
             pCurrentProcess = pCurrentProcess->pNext;
             if(pCurrentProcess == NULL) {
                 pCurrentProcess = g_pRootReadyQueue;
             }
         }
-        pthread_mutex_unlock(&mutex);
     }
     
     DEBUG(("Leaving %s\n", __FUNCTION__));
@@ -222,7 +225,7 @@ void
 main(int argc, char **argv) {
     
     int             nNumberOfProcess;       // 프로세스의 개수
-    int             nQuantomn;              // 문맥전환이 일어날 시간 퀀텀
+    int             nQuantum;              // 문맥전환이 일어날 시간 퀀텀
     PReady_Queue    pReadyQueue;            // ready queue 를 할당할 포인터
     char            sInputBuffer[10];       // 데이터 입력을 위한 입력 버퍼
     pthread_t       tid;                    // 스레드 ID
@@ -248,34 +251,37 @@ main(int argc, char **argv) {
     for(i=1;i<=nNumberOfProcess;i++) {
         printf(">> %d 번째 프로세스의 버스트 시간을 입력하세요? ", i);
         gets(sInputBuffer);
-        pReadyQueue = malloc(sizeof(Ready_Queue));                       // 프로세스를 할당한다.
+        pReadyQueue = malloc(sizeof(Ready_Queue));                      // 프로세스를 할당한다.
         if(pReadyQueue) {
-            pReadyQueue->processInfo.nBurstTime = atoi(sInputBuffer);    // 버스트 시간 
-            pReadyQueue->processInfo.nProcessId = i;
-            pReadyQueue->pNext = NULL;
+            pReadyQueue->processInfo.nBurstTime = atoi(sInputBuffer);   // 버스트 시간 
+            pReadyQueue->processInfo.nProcessId = i;                    // 프로세스 구분을 위한 ID값을 입력한다.
+            pReadyQueue->pNext = NULL;                                  // 다음 스케쥴
+            // 보통 pNext만 가지고 있지만, 별도의 tail 포인터를 처리하지 않기 위해서 pPrevious를 넣었다.
             pReadyQueue->pPrevious = NULL;
             
-            AddtoReadyQueue(pReadyQueue);
+            AddtoReadyQueue(pReadyQueue);                               // ready 큐에 추가
         }
     }
     
+    // znj
     if(argc >= 3) {
         // 파라메터에서 시간 퀀텀을 가져오고, 그 값이 유효한지 검증한다.
-        nQuantomn = atoi(argv[2]);
-        if(nQuantomn > 100) {
-            nQuantomn = 100;
-        } else if(nQuantomn < 1) {
-            nQuantomn = 1;
+        nQuantum = atoi(argv[2]);
+        if(nQuantum > 100) {
+            nQuantum = 100;
+        } else if(nQuantum < 1) {
+            nQuantum = 1;
         }
     } else {
-        nQuantomn = GetQuanterm();
+        nQuantum = GetQuantum();
     }
     
-    printf(">> 시간 퀀텀은 %d ns 입니다.\n", nQuantomn);
+    printf(">> 시간 퀀텀은 %d ns 입니다.\n", nQuantum);
     
     // Round Robin 스케쥴링 스레드 생성
+    // 실제 스케쥴링은 인터럽터에 연결되어 호출되지만, 시뮬레이션이기 때문에 스레드로 작동되도록 만들었다.
     pthread_attr_init(&attr);
-    pthread_create(&tid, &attr, RoundRobinScheduler, &nQuantomn);
+    pthread_create(&tid, &attr, RoundRobinScheduler, &nQuantum);
     pthread_join(tid, NULL);        // Round Robin 스케쥴러가 끝날때까지 대기
     
     printf("Round Robin의 스케쥴 결과는 아래와 같습니다.\n");
