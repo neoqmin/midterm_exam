@@ -23,6 +23,7 @@
 typedef struct _process {
     int     nProcessId;         ///< 프로세스 ID
     int     nBurstTime;         ///< 버스트 타임
+    int     nPriority;          ///< 우선순위
 } ProcessInfo;
 
 /**
@@ -107,6 +108,61 @@ GetQuantum()
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;      // 스레드 초기화
 
 /**
+ * @brief       Priority Scheduler
+ * @date        2015.10.21
+ * @author      황규민
+ */
+void
+*PriorityScheduler(void *param)
+{
+    PReady_Queue pCurrentProcess = g_pRootReadyQueue;   // 프로세스 처리를 위한 현재 큐
+    PReady_Queue pRunReadyQueue = NULL;      // 프로세스 처리를 위한 큐
+    int nQuantomn = *(int*)param;               // 시간 퀀텀을 받아온다.
+    char szDoing[5];                            // 작업 프로세스
+    int i;                                      // loop index
+    
+    DEBUG(("Entering %s(%d)\n", __FUNCTION__, nQuantomn));
+    
+    while(g_pRootReadyQueue) {
+        pCurrentProcess = g_pRootReadyQueue;        // pCurrentProcess는 g_pRootReadyQueue의 인덱스가 된다.
+        pRunReadyQueue = NULL;
+        
+        // 아래의 과정으로 우선순위가 최상위인 ready queue 엔트리를 얻는다.
+        while(pCurrentProcess) {
+            // 우선순위가 0이 아니고, 현재의 pRunReadyQueue보다 적을 경우 pCurrentProcess를 pRunReadyQueue로 대입한다.
+            if((pCurrentProcess->processInfo.nPriority != 0)
+                && ((pRunReadyQueue == NULL) || (pRunReadyQueue->processInfo.nPriority > pCurrentProcess->processInfo.nPriority)))
+            {
+                pRunReadyQueue = pCurrentProcess;
+            }
+            
+            pCurrentProcess = pCurrentProcess->pNext;
+        }
+        
+        // 모두 실행되었을 경우 루프를 빠져나온다.
+        if(pRunReadyQueue == NULL) {
+            break;
+        }
+        
+        memset(szDoing, 0x00, 5);
+        
+        // 프로세스의 처리를 시각화하기 위한 작업
+        sprintf(szDoing, "[%d(%d)", pRunReadyQueue->processInfo.nProcessId, pRunReadyQueue->processInfo.nPriority);
+        strcat(g_szResult, szDoing);
+        DEBUG((szDoing));
+        for(i=1;i<=pRunReadyQueue->processInfo.nBurstTime;i++) {
+            strcat(g_szResult, ".");
+            DEBUG(("."));
+        }
+        strcat(g_szResult, "]");
+        DEBUG(("]"));
+        pRunReadyQueue->processInfo.nPriority = 0;
+    }
+    
+    DEBUG(("Leaving %s\n", __FUNCTION__));
+}
+
+/**
  * @brief       Round Robin Scheduler
  * @date        2015.10.20
  * @author      황규민
@@ -117,7 +173,7 @@ void
 *RoundRobinScheduler(void *param)
 {
     PReady_Queue pCurrentProcess = g_pRootReadyQueue;   // 프로세스 처리를 위한 현재 큐
-    PReady_Queue pFreeReadyQueue = NULL;               // 프로세스 처리를 위한 이전 큐
+    PReady_Queue pFreeReadyQueue = NULL;               // 삭제를 위한 Ready 큐
     int nQuantomn = *(int*)param;               // 시간 퀀텀을 받아온다.
     char szDoing[5];                            // 작업 프로세스
     int i;                                      // loop index
@@ -255,6 +311,10 @@ main(int argc, char **argv) {
         if(pReadyQueue) {
             pReadyQueue->processInfo.nBurstTime = atoi(sInputBuffer);   // 버스트 시간 
             pReadyQueue->processInfo.nProcessId = i;                    // 프로세스 구분을 위한 ID값을 입력한다.
+            
+            printf(">> %d 번째 프로세스의 우선 순위를 입력하세요? ", i);
+            gets(sInputBuffer);
+            pReadyQueue->processInfo.nPriority = atoi(sInputBuffer);
             pReadyQueue->pNext = NULL;                                  // 다음 스케쥴
             // 보통 pNext만 가지고 있지만, 별도의 tail 포인터를 처리하지 않기 위해서 pPrevious를 넣었다.
             pReadyQueue->pPrevious = NULL;
@@ -277,13 +337,24 @@ main(int argc, char **argv) {
     }
     
     printf(">> 시간 퀀텀은 %d ns 입니다.\n", nQuantum);
+
+    // Priority 스케쥴링 스레드 생성
+    // 실제 스케쥴링은 인터럽터에 연결되어 호출되지만, 시뮬레이션이기 때문에 스레드로 작동되도록 만들었다.
+    pthread_attr_init(&attr);
+    pthread_create(&tid, &attr, PriorityScheduler, &nQuantum);
+    pthread_join(tid, NULL);        // Priority 스케쥴러가 끝날때까지 대기
+
+    printf("우선순위 스케쥴 결과는 아래와 같습니다.\n");
+    printf("%s\n", g_szResult);
+    
+    memset(g_szResult, 0x00, 4096);
     
     // Round Robin 스케쥴링 스레드 생성
     // 실제 스케쥴링은 인터럽터에 연결되어 호출되지만, 시뮬레이션이기 때문에 스레드로 작동되도록 만들었다.
     pthread_attr_init(&attr);
     pthread_create(&tid, &attr, RoundRobinScheduler, &nQuantum);
     pthread_join(tid, NULL);        // Round Robin 스케쥴러가 끝날때까지 대기
-    
+
     printf("Round Robin의 스케쥴 결과는 아래와 같습니다.\n");
     printf("%s\n", g_szResult);
     
